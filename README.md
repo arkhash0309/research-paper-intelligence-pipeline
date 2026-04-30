@@ -1,6 +1,6 @@
 # Research Paper Intelligence Pipeline
 
-An AI-powered tool that autonomously searches academic databases, extracts key findings, and generates structured literature reviews — powered by a custom MCP server and OpeanAI.
+An AI-powered tool that autonomously searches academic databases, extracts key findings, and generates structured literature reviews — powered by a custom MCP server and OpenAI.
 
 ```
 ┌─────────────────────────────────────────────────────┐
