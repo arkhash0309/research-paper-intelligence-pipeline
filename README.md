@@ -1,6 +1,6 @@
 # Research Paper Intelligence Pipeline
 
-An AI-powered tool that autonomously searches academic databases, extracts key findings, and generates structured literature reviews — powered by a custom MCP server and Claude.
+An AI-powered tool that autonomously searches academic databases, extracts key findings, and generates structured literature reviews — powered by a custom MCP server and OpeanAI.
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -20,7 +20,7 @@ An AI-powered tool that autonomously searches academic databases, extracts key f
 │  synthesise_literature_review · save_review         │
 └──────────┬────────────────────────┬─────────────────┘
            │                        │
-    arXiv API             Anthropic API (Claude)
+    arXiv API             OpenAI API (ChatGPT)
     Semantic Scholar API  (synthesis tools)
 ```
 
@@ -53,7 +53,7 @@ pip install -r requirements.txt
 
 # Create your .env from the example
 cp .env.example .env
-# Edit .env and fill in your ANTHROPIC_API_KEY
+# Edit .env and fill in your OPENAI_API_KEY
 ```
 
 ### 3. Set up the FastAPI backend
@@ -101,7 +101,7 @@ Then open [http://localhost:5173](http://localhost:5173) in your browser.
 2. Choose how many papers per source (5–20) and click **Find Papers**
 3. The pipeline fetches papers from arXiv and Semantic Scholar in parallel
 4. Paper cards appear with expandable abstracts and links
-5. The pipeline automatically continues to **Analyse** (Claude extracts themes & findings) and **Synthesise** (Claude writes the review)
+5. The pipeline automatically continues to **Analyse** (GPT extracts themes & findings) and **Synthesise** (GPT writes the review)
 6. The finished review renders as formatted Markdown with Copy and Download buttons
 7. All reviews are auto-saved — browse them at **Saved Reviews** in the top nav
 
@@ -117,7 +117,7 @@ research-pipeline/
 │   │   ├── arxiv_tool.py              # arXiv Atom API
 │   │   ├── semantic_scholar_tool.py   # Semantic Scholar Graph API
 │   │   ├── paper_parser_tool.py       # Normalise + deduplicate papers
-│   │   ├── synthesis_tool.py          # Claude API calls (findings, gaps, review)
+│   │   ├── synthesis_tool.py          # OpenAI API calls (findings, gaps, review)
 │   │   └── save_tool.py               # JSON persistence in storage/reviews/
 │   └── requirements.txt
 │
