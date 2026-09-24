@@ -89,7 +89,8 @@ async def search_arxiv(query: str, max_results: int = 10) -> list[dict[str, Any]
         pdf_url = ""
         for link in entry.get("links", []):
             if link.get("type") == "application/pdf":
-                pdf_url = link.get("href", "")
+                # The Atom feed still lists http:// links; arXiv serves https
+                pdf_url = link.get("href", "").replace("http://", "https://", 1)
                 break
         # Fallback: construct PDF URL from arxiv_id
         if not pdf_url and arxiv_id:
@@ -141,7 +142,7 @@ async def fetch_paper_details(arxiv_id: str) -> dict[str, Any]:
     pdf_url = ""
     for link in entry.get("links", []):
         if link.get("type") == "application/pdf":
-            pdf_url = link.get("href", "")
+            pdf_url = link.get("href", "").replace("http://", "https://", 1)
             break
     if not pdf_url:
         pdf_url = f"https://arxiv.org/pdf/{arxiv_id}"
