@@ -27,7 +27,7 @@ const RETRY_LABELS = {
 /** Human-readable loading messages per pipeline stage */
 const STAGE_MESSAGES = {
   [PIPELINE_STATUS.FETCHING_PAPERS]: 'Searching arXiv and Semantic Scholar…',
-  [PIPELINE_STATUS.ANALYSING]: 'Extracting findings with Claude AI…',
+  [PIPELINE_STATUS.ANALYSING]: 'Extracting findings with OpenAI…',
   [PIPELINE_STATUS.SYNTHESISING]: 'Writing your literature review…',
 }
 
@@ -59,7 +59,7 @@ export default function HomePage({ research }) {
         </h1>
         <p className="text-slate-500 dark:text-slate-400 max-w-xl mx-auto">
           Enter a research topic and the pipeline will search arXiv & Semantic Scholar,
-          extract key findings, and generate a structured literature review — all with Claude AI.
+          extract key findings, and generate a structured literature review — powered by OpenAI.
         </p>
         <SearchBar onSearch={handleSearch} disabled={isRunning} />
       </section>

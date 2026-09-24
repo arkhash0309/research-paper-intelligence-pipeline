@@ -3,8 +3,8 @@ research.py — FastAPI router for all /api/research endpoints.
 
 Endpoint summary:
     POST /api/research/start      — search arXiv + Semantic Scholar, deduplicate
-    POST /api/research/analyse    — extract findings and identify gaps via Claude
-    POST /api/research/synthesise — generate and save a literature review via Claude
+    POST /api/research/analyse    — extract findings and identify gaps via OpenAI
+    POST /api/research/synthesise — generate and save a literature review via OpenAI
     GET  /api/research/history    — list all saved reviews
     GET  /api/research/review/{filename} — fetch a specific saved review
 """
@@ -224,7 +224,7 @@ async def analyse_papers(body: AnalyseRequest) -> AnalyseResponse:
     4. Return combined analysis.
 
     Raises:
-        HTTPException 502: If either Claude API call fails.
+        HTTPException 502: If either OpenAI call fails.
     """
     try:
         findings: dict[str, Any] = await call_tool(
@@ -271,7 +271,7 @@ async def synthesise_review(body: SynthesiseRequest) -> SynthesiseResponse:
     3. Return the Markdown and the saved file path.
 
     Raises:
-        HTTPException 502: If the Claude API call or file save fails.
+        HTTPException 502: If the OpenAI call or file save fails.
     """
     try:
         review_markdown: str = await call_tool(
