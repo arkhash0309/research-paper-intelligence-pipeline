@@ -100,7 +100,12 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
             (block.text for block in result.content if getattr(block, "text", None)),
             "Unknown MCP error",
         )
-        raise RuntimeError(f"MCP tool '{tool_name}' returned an error: {error_text}")
+        # FastMCP prefixes messages with "Error executing tool <name>: " — drop
+        # it so the user sees only the underlying reason
+        prefix = f"Error executing tool {tool_name}: "
+        if error_text.startswith(prefix):
+            error_text = error_text[len(prefix):]
+        raise RuntimeError(error_text)
 
     return _extract_payload(result)
 
