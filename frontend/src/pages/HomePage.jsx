@@ -8,6 +8,7 @@
  *   4. Retry button (resumes from the failed step if the pipeline errors)
  *   5. LiteratureReview panel (appears after synthesis is done)
  */
+import { Link } from 'react-router-dom'
 import SearchBar from '../components/SearchBar'
 import PaperCard from '../components/PaperCard'
 import LiteratureReview from '../components/LiteratureReview'
@@ -169,7 +170,13 @@ export default function HomePage({ research }) {
           />
           {review.filename && (
             <p className="text-xs text-slate-400 dark:text-slate-500 text-right">
-              Saved as <code>{review.filename}</code>
+              Saved as{' '}
+              <Link
+                to={`/reviews/${encodeURIComponent(review.filename)}`}
+                className="text-accent-600 dark:text-accent-400 hover:underline"
+              >
+                <code>{review.filename}</code>
+              </Link>
             </p>
           )}
         </section>
