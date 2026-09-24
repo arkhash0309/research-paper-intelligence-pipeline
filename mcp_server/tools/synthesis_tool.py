@@ -7,6 +7,7 @@ environment variable. API key is read from the OPENAI_API_KEY environment variab
 
 import os
 import json
+import re
 from typing import Any
 
 from openai import OpenAI, APIError
@@ -212,17 +213,19 @@ def synthesise_literature_review(
 
     Returns:
         A Markdown string (600–900 words) with sections:
-        Introduction, Key Themes, Major Findings, Research Gaps, Conclusion.
+        Introduction, Key Themes, Major Findings, Research Gaps, Conclusion,
+        followed by a References section generated from ``papers``.
     """
-    # Summarise papers for citation reference
+    # Give every paper a ready-made citation key so the model cites real
+    # papers in a consistent format instead of inventing authors.
     paper_refs = "\n".join(
-        f"- {p.get('title', 'Untitled')} ({p.get('year', 'n.d.')}) — {p.get('authors', 'Unknown')}"
+        f"- {_citation_key(p)} — {p.get('title') or 'Untitled'}"
         for p in papers
     )
 
     themes_text = "\n".join(f"- {t}" for t in findings.get("themes", []))
     findings_text = "\n".join(
-        f"- {fp.get('title', '')} ({fp.get('finding', '')})"
+        f"- {fp.get('title', '')}: {fp.get('finding', '')}"
         for fp in findings.get("findings_per_paper", [])
     )
     gaps_text = "\n".join(f"- {g}" for g in gaps.get("gaps", []))
@@ -240,13 +243,15 @@ Write a literature review in Markdown with exactly these five sections:
 
 Guidelines:
 - Target 600–900 words total
-- Cite papers inline by title and year, e.g. (Smith et al., 2023)
+- Cite papers inline using exactly the citation key shown before each paper below, e.g. (Vaswani et al., 2017)
+- Only cite papers from the list below — never invent authors, years or papers
+- Do NOT write a References or Bibliography section; it is appended automatically
 - Be analytical, not just descriptive — discuss relationships between findings
 - In the Research Gaps section, include both gaps and open questions
 
 Use the following material:
 
-**Papers:**
+**Papers (citation key — title):**
 {paper_refs}
 
 **Themes:**
@@ -266,4 +271,46 @@ Use the following material:
 
 Write the full Markdown review now:"""
 
-    return _chat(prompt, max_completion_tokens=16000, json_mode=False, step="synthesise_literature_review")
+    review = _chat(prompt, max_completion_tokens=16000, json_mode=False, step="synthesise_literature_review")
+    # Drop any references list the model wrote anyway, then append the real one
+    review = re.split(r"\n#{1,6}\s*(?:References|Bibliography)\b", review, flags=re.IGNORECASE)[0]
+    return f"{review.rstrip()}\n\n{_references_section(papers)}\n"
+
+
+def _author_list(paper: dict[str, Any]) -> list[str]:
+    """Split the comma-separated authors string into individual names."""
+    return [a.strip() for a in str(paper.get("authors") or "").split(",") if a.strip()]
+
+
+def _citation_key(paper: dict[str, Any]) -> str:
+    """Build an author-year citation key such as "(Vaswani et al., 2017)"."""
+    authors = _author_list(paper)
+    year = paper.get("year") or "n.d."
+    if not authors:
+        short_title = " ".join(str(paper.get("title") or "Untitled").split()[:4])
+        return f"({short_title}, {year})"
+    surname = authors[0].split()[-1]
+    if len(authors) == 1:
+        return f"({surname}, {year})"
+    if len(authors) == 2:
+        return f"({surname} & {authors[1].split()[-1]}, {year})"
+    return f"({surname} et al., {year})"
+
+
+def _references_section(papers: list[dict[str, Any]]) -> str:
+    """Build a Markdown References section from the actual input papers."""
+    entries: list[str] = []
+    def sort_key(paper: dict[str, Any]) -> str:
+        authors = _author_list(paper)
+        return (authors[0].split()[-1] if authors else str(paper.get("title") or "")).lower()
+
+    for paper in sorted(papers, key=sort_key):
+        authors = _author_list(paper)
+        author_text = ", ".join(authors[:6]) + (", et al." if len(authors) > 6 else "")
+        title = str(paper.get("title") or "Untitled")
+        url = paper.get("url") or paper.get("pdf_url")
+        title_text = f"[{title}]({url})" if url else title
+        entries.append(
+            f"- {author_text or 'Unknown authors'} ({paper.get('year') or 'n.d.'}). {title_text}."
+        )
+    return "## References\n\n" + "\n".join(entries)
