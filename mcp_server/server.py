@@ -19,7 +19,6 @@ load_dotenv(dotenv_path=_env_path)
 from mcp.server.fastmcp import FastMCP
 from tools.arxiv_tool import search_arxiv, fetch_paper_details
 from tools.semantic_scholar_tool import search_semantic_scholar
-from tools.paper_parser_tool import parse_paper, deduplicate_papers
 from tools.synthesis_tool import (
     extract_key_findings,
     identify_research_gaps,

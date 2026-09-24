@@ -9,6 +9,7 @@ Endpoint summary:
     GET  /api/research/review/{filename} — fetch a specific saved review
 """
 
+import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -81,12 +82,28 @@ async def start_research(body: StartResearchRequest) -> StartResearchResponse:
     )
 
 
+def _clean_text(value: Any) -> str:
+    """Return value as a single-line string with collapsed whitespace ('' for None)."""
+    if value is None:
+        return ""
+    return " ".join(str(value).split())
+
+
+def _to_int(value: Any) -> int | None:
+    """Best-effort int conversion that returns None instead of raising."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _normalise_paper(raw: dict[str, Any]) -> dict[str, Any]:
     """
     Normalise a raw paper dict from arXiv or Semantic Scholar into a common schema.
 
     Produces a dict with keys: id, title, authors, abstract, year, source,
-    url, pdf_url, citation_count.
+    url, pdf_url, citation_count. Null or missing fields from the upstream
+    APIs are replaced with safe defaults.
 
     Args:
         raw: Raw paper dict from one of the search tools.
@@ -94,33 +111,38 @@ def _normalise_paper(raw: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Normalised paper dict.
     """
-    source = raw.get("source", "unknown")
+    source = raw.get("source") or "unknown"
 
     if source == "arxiv":
-        paper_id = raw.get("arxiv_id", "")
+        paper_id = _clean_text(raw.get("arxiv_id"))
         url = f"https://arxiv.org/abs/{paper_id}" if paper_id else ""
-        pdf_url = raw.get("pdf_url", "")
-        published_date = raw.get("published_date", "")
-        year: int | None = int(published_date[:4]) if len(published_date) >= 4 else None
-        citation_count = raw.get("citation_count", 0)
+        year = _to_int(_clean_text(raw.get("published_date"))[:4])
     else:
-        paper_id = raw.get("paper_id", "")
-        url = raw.get("url", "")
-        pdf_url = raw.get("pdf_url", "")
-        year = raw.get("year")
-        citation_count = raw.get("citation_count", 0)
+        paper_id = _clean_text(raw.get("paper_id"))
+        url = _clean_text(raw.get("url"))
+        year = _to_int(raw.get("year"))
 
     return {
         "id": paper_id,
-        "title": raw.get("title", "").strip(),
-        "authors": raw.get("authors", ""),
-        "abstract": raw.get("abstract", "").strip(),
+        "title": _clean_text(raw.get("title")),
+        "authors": _clean_text(raw.get("authors")),
+        "abstract": _clean_text(raw.get("abstract")),
         "year": year,
         "source": source,
         "url": url,
-        "pdf_url": pdf_url,
-        "citation_count": citation_count,
+        "pdf_url": _clean_text(raw.get("pdf_url")),
+        "citation_count": _to_int(raw.get("citation_count")) or 0,
     }
+
+
+def _title_key(title: str) -> str:
+    """
+    Build a comparison key for duplicate detection.
+
+    Lowercases and strips punctuation/whitespace differences so that e.g.
+    "Attention Is All You Need" and "Attention is all you need." match.
+    """
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", title.lower()).split())
 
 
 def _normalise_and_deduplicate(
@@ -131,7 +153,7 @@ def _normalise_and_deduplicate(
     Merge two raw paper lists, normalise each entry, and deduplicate by title.
 
     arXiv entries are preferred over Semantic Scholar duplicates because they
-    carry PDF links.
+    carry PDF links; the Semantic Scholar citation count is kept when merging.
 
     Args:
         arxiv_papers: Raw dicts from tool_search_arxiv.
@@ -140,24 +162,32 @@ def _normalise_and_deduplicate(
     Returns:
         Deduplicated, normalised list of paper dicts.
     """
-    # _normalise_paper is defined below in this module
+    normalised = [
+        _normalise_paper(paper)
+        for paper in [*arxiv_papers, *ss_papers]
+        if isinstance(paper, dict)
+    ]
 
-    normalised: list[dict[str, Any]] = []
-    for paper in arxiv_papers:
-        normalised.append(_normalise_paper(paper))
-    for paper in ss_papers:
-        normalised.append(_normalise_paper(paper))
-
-    # Deduplicate: prefer arXiv version when title matches
     seen: dict[str, dict[str, Any]] = {}
     for paper in normalised:
-        key = paper.get("title", "").lower().strip()
+        key = _title_key(paper["title"])
         if not key:
+            continue  # Skip papers with no usable title
+        existing = seen.get(key)
+        if existing is None:
+            seen[key] = paper
             continue
-        if key not in seen:
-            seen[key] = paper
-        elif seen[key].get("source") != "arxiv" and paper.get("source") == "arxiv":
-            seen[key] = paper
+
+        # Keep the arXiv record, but carry over the richer metadata from the duplicate
+        preferred, other = (
+            (paper, existing)
+            if existing["source"] != "arxiv" and paper["source"] == "arxiv"
+            else (existing, paper)
+        )
+        preferred["citation_count"] = max(preferred["citation_count"], other["citation_count"])
+        preferred["abstract"] = preferred["abstract"] or other["abstract"]
+        preferred["year"] = preferred["year"] or other["year"]
+        seen[key] = preferred
 
     return list(seen.values())
 
