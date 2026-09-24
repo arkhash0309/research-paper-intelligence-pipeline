@@ -9,6 +9,7 @@ Endpoint summary:
     GET  /api/research/review/{filename} — fetch a specific saved review
 """
 
+import asyncio
 import re
 from typing import Any
 
@@ -39,34 +40,49 @@ async def start_research(body: StartResearchRequest) -> StartResearchResponse:
     Search arXiv and Semantic Scholar for papers on the given topic.
 
     Steps:
-    1. Call tool_search_arxiv to fetch papers from arXiv.
-    2. Call tool_search_semantic_scholar to fetch papers from Semantic Scholar.
-    3. Normalise both result sets using parse_paper (via the MCP paper_parser tool).
-    4. Deduplicate by title similarity.
+    1. Call tool_search_arxiv and tool_search_semantic_scholar concurrently.
+    2. Normalise both result sets into a common schema.
+    3. Deduplicate by normalised title.
     5. Return the combined, deduplicated list with source breakdown.
 
     Raises:
-        HTTPException 502: If either search call fails.
+        HTTPException 502: If both search calls fail. If only one fails, its
+            error is returned in ``warnings`` alongside the other source's papers.
     """
-    # Run both searches — errors are surfaced as HTTPException
-    try:
-        arxiv_papers: list[dict[str, Any]] = await call_tool(
-            "tool_search_arxiv",
-            {"query": body.topic, "max_results": body.max_papers},
-        )
-    except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=f"arXiv search failed: {e}")
-
-    try:
-        ss_papers: list[dict[str, Any]] = await call_tool(
+    # Run both searches concurrently; one source failing (e.g. a Semantic
+    # Scholar 429) should not sink the whole run.
+    arxiv_result, ss_result = await asyncio.gather(
+        call_tool("tool_search_arxiv", {"query": body.topic, "max_results": body.max_papers}),
+        call_tool(
             "tool_search_semantic_scholar",
             {"query": body.topic, "max_results": body.max_papers},
-        )
-    except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=f"Semantic Scholar search failed: {e}")
+        ),
+        return_exceptions=True,
+    )
 
-    # Normalise and deduplicate inline (avoids an extra MCP round-trip for a simple operation)
-    all_papers = _normalise_and_deduplicate(arxiv_papers or [], ss_papers or [])
+    failures: list[str] = []
+    raw_results: list[list[dict[str, Any]]] = []
+    for label, result in (("arXiv", arxiv_result), ("Semantic Scholar", ss_result)):
+        if isinstance(result, BaseException):
+            if not isinstance(result, Exception):
+                raise result  # e.g. CancelledError — don't swallow it
+            failures.append(f"{label}: {result}")
+            raw_results.append([])
+        else:
+            raw_results.append(result if isinstance(result, list) else [])
+
+    if len(failures) == 2:
+        raise HTTPException(
+            status_code=502,
+            detail="Both paper searches failed. " + " | ".join(failures),
+        )
+
+    warnings = [
+        f"Search failed for {failure} — showing results from the other source only."
+        for failure in failures
+    ]
+
+    all_papers = _normalise_and_deduplicate(raw_results[0], raw_results[1])
 
     sources = SourceBreakdown(
         arxiv=sum(1 for p in all_papers if p.get("source") == "arxiv"),
@@ -79,6 +95,7 @@ async def start_research(body: StartResearchRequest) -> StartResearchResponse:
         papers=all_papers,
         total=len(all_papers),
         sources=sources,
+        warnings=warnings,
     )
 
 
