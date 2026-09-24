@@ -10,6 +10,7 @@
  *   review      {object}    — { review_markdown, saved_filepath, filename } from /synthesise
  *   status      {string}    — current pipeline stage
  *   error       {string|null} — last error message or null
+ *   warnings    {string[]}  — non-fatal problems (e.g. one search source failed)
  *   runPipeline {function}  — start the full pipeline for a topic
  *   reset       {function}  — reset to idle
  */
@@ -31,6 +32,7 @@ export default function useResearch() {
   const [review, setReview] = useState(null)
   const [status, setStatus] = useState(PIPELINE_STATUS.IDLE)
   const [error, setError] = useState(null)
+  const [warnings, setWarnings] = useState([])
 
   /**
    * Run the full pipeline: search → analyse → synthesise.
@@ -41,6 +43,7 @@ export default function useResearch() {
   const runPipeline = useCallback(async (topic, maxPapers = 10) => {
     // Reset state for a fresh run
     setError(null)
+    setWarnings([])
     setPapers([])
     setAnalysis(null)
     setReview(null)
@@ -51,6 +54,14 @@ export default function useResearch() {
       const searchResult = await startResearch(topic, maxPapers)
       const fetchedPapers = searchResult.papers || []
       setPapers(fetchedPapers)
+      setWarnings(searchResult.warnings || [])
+
+      // Nothing to analyse — stop here instead of asking the model to review nothing
+      if (fetchedPapers.length === 0) {
+        setError(`No papers found for "${topic}". Try a broader or differently worded topic.`)
+        setStatus(PIPELINE_STATUS.IDLE)
+        return
+      }
 
       // Step 2: Analyse
       setStatus(PIPELINE_STATUS.ANALYSING)
@@ -81,7 +92,8 @@ export default function useResearch() {
     setReview(null)
     setStatus(PIPELINE_STATUS.IDLE)
     setError(null)
+    setWarnings([])
   }, [])
 
-  return { papers, analysis, review, status, error, runPipeline, reset }
+  return { papers, analysis, review, status, error, warnings, runPipeline, reset }
 }

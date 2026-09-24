@@ -115,7 +115,16 @@ export async function getReview(filename) {
  */
 function _extractMessage(err, fallback) {
   if (axios.isAxiosError(err)) {
-    return err.response?.data?.detail || err.message || fallback
+    const detail = err.response?.data?.detail
+    // FastAPI validation errors (422) return detail as an array of objects
+    if (Array.isArray(detail)) {
+      return detail.map(d => d?.msg || JSON.stringify(d)).join('; ') || fallback
+    }
+    if (typeof detail === 'string' && detail) return detail
+    if (err.code === 'ECONNABORTED') {
+      return `${fallback}: the request timed out. The backend may still be working — please try again.`
+    }
+    return err.message || fallback
   }
   return err?.message || fallback
 }

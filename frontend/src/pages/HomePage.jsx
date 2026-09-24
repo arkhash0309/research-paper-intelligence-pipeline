@@ -16,7 +16,7 @@ import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorBanner from '../components/ErrorBanner'
 import PipelineProgress from '../components/PipelineProgress'
 import useResearch, { PIPELINE_STATUS } from '../hooks/useResearch'
-import { Sparkles, RotateCcw } from 'lucide-react'
+import { Sparkles, RotateCcw, AlertTriangle } from 'lucide-react'
 
 /** Human-readable loading messages per pipeline stage */
 const STAGE_MESSAGES = {
@@ -26,7 +26,7 @@ const STAGE_MESSAGES = {
 }
 
 export default function HomePage() {
-  const { papers, analysis, review, status, error, runPipeline, reset } = useResearch()
+  const { papers, analysis, review, status, error, warnings, runPipeline, reset } = useResearch()
   const [currentTopic, setCurrentTopic] = useState('')
 
   const isRunning = status !== PIPELINE_STATUS.IDLE && status !== PIPELINE_STATUS.DONE
@@ -55,6 +55,19 @@ export default function HomePage() {
       {/* ── Error banner ── */}
       {error && (
         <ErrorBanner message={error} onDismiss={reset} />
+      )}
+
+      {/* ── Non-fatal warnings (e.g. one search source unavailable) ── */}
+      {warnings.length > 0 && (
+        <div
+          role="status"
+          className="flex items-start gap-3 p-4 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300"
+        >
+          <AlertTriangle size={18} className="flex-shrink-0 mt-0.5" />
+          <ul className="flex-1 text-sm space-y-1">
+            {warnings.map((w, i) => <li key={i}>{w}</li>)}
+          </ul>
+        </div>
       )}
 
       {/* ── Pipeline progress steps ── */}
