@@ -13,6 +13,11 @@ from typing import Any
 from slugify import slugify
 
 
+def _reviews_dir() -> Path:
+    """Return storage/reviews/ at the project root (mcp_server/tools/ -> root)."""
+    return Path(__file__).resolve().parent.parent.parent / "storage" / "reviews"
+
+
 def save_review(
     topic: str, review_markdown: str, metadata: dict[str, Any]
 ) -> dict[str, str]:
@@ -33,18 +38,13 @@ def save_review(
             filepath  — absolute path to the saved file (as string)
             saved_at  — ISO 8601 UTC timestamp of when the file was written
     """
-    # Resolve the storage/reviews directory relative to this file's location
-    # mcp_server/tools/ -> mcp_server/ -> project root -> storage/reviews/
-    project_root = Path(__file__).resolve().parent.parent.parent
-    reviews_dir = project_root / "storage" / "reviews"
+    reviews_dir = _reviews_dir()
     reviews_dir.mkdir(parents=True, exist_ok=True)
 
     # Build a filesystem-safe filename
     now = datetime.now(timezone.utc)
     timestamp_str = now.strftime("%Y%m%d_%H%M%S")
-    topic_slug = slugify(topic, max_length=60, word_boundary=True)
-    filename = f"{timestamp_str}_{topic_slug}.json"
-    filepath = reviews_dir / filename
+    topic_slug = slugify(topic, max_length=60, word_boundary=True) or "review"
 
     # Assemble the full record to persist
     record: dict[str, Any] = {
@@ -54,7 +54,20 @@ def save_review(
         "metadata": metadata,
     }
 
-    filepath.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+    payload = json.dumps(record, indent=2, ensure_ascii=False)
+
+    # Exclusive create ('x') so two saves of the same topic within the same
+    # second get distinct files instead of silently overwriting each other
+    suffix = 1
+    while True:
+        filename = f"{timestamp_str}_{topic_slug}{'' if suffix == 1 else f'-{suffix}'}.json"
+        filepath = reviews_dir / filename
+        try:
+            with filepath.open("x", encoding="utf-8") as f:
+                f.write(payload)
+            break
+        except FileExistsError:
+            suffix += 1
 
     return {
         "filepath": str(filepath),
@@ -72,14 +85,13 @@ def list_reviews() -> list[dict[str, Any]]:
             topic, saved_at, filepath, filename.
         Sorted by saved_at descending (newest first).
     """
-    project_root = Path(__file__).resolve().parent.parent.parent
-    reviews_dir = project_root / "storage" / "reviews"
+    reviews_dir = _reviews_dir()
 
     if not reviews_dir.exists():
         return []
 
     summaries: list[dict[str, Any]] = []
-    for json_file in sorted(reviews_dir.glob("*.json"), reverse=True):
+    for json_file in reviews_dir.glob("*.json"):
         try:
             data = json.loads(json_file.read_text(encoding="utf-8"))
             summaries.append(
@@ -94,6 +106,8 @@ def list_reviews() -> list[dict[str, Any]]:
             # Skip corrupted or unreadable files
             continue
 
+    # Newest first; ISO 8601 UTC timestamps sort correctly as strings
+    summaries.sort(key=lambda r: (r["saved_at"], r["filename"]), reverse=True)
     return summaries
 
 
@@ -109,12 +123,16 @@ def load_review(filename: str) -> dict[str, Any]:
 
     Raises:
         FileNotFoundError: If the file does not exist.
-        ValueError: If the file contains invalid JSON.
+        ValueError: If the filename is invalid or the file contains invalid JSON.
     """
-    project_root = Path(__file__).resolve().parent.parent.parent
-    filepath = project_root / "storage" / "reviews" / filename
+    reviews_dir = _reviews_dir().resolve()
+    filepath = (reviews_dir / filename).resolve()
 
-    if not filepath.exists():
+    # Only allow plain *.json names inside storage/reviews/ (no path traversal)
+    if filepath.parent != reviews_dir or filepath.suffix != ".json":
+        raise ValueError(f"Invalid review filename: {filename}")
+
+    if not filepath.is_file():
         raise FileNotFoundError(f"Review file not found: {filename}")
 
     try:

@@ -361,6 +361,7 @@ async def get_review(filename: str) -> dict[str, Any]:
         Full review record dict.
 
     Raises:
+        HTTPException 400: If the filename is not a plain *.json name.
         HTTPException 404: If the file does not exist.
         HTTPException 502: If the MCP call fails unexpectedly.
     """
@@ -370,6 +371,8 @@ async def get_review(filename: str) -> dict[str, Any]:
         )
     except RuntimeError as e:
         error_str = str(e)
+        if "invalid review filename" in error_str.lower():
+            raise HTTPException(status_code=400, detail=f"Invalid review filename: {filename}")
         if "not found" in error_str.lower():
             raise HTTPException(status_code=404, detail=f"Review not found: {filename}")
         raise HTTPException(status_code=502, detail=f"Failed to load review: {e}")
