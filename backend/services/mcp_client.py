@@ -27,9 +27,8 @@ def _build_server_params() -> StdioServerParameters:
     """
     Build the StdioServerParameters needed to launch the MCP server subprocess.
 
-    The server inherits ANTHROPIC_API_KEY and SEMANTIC_SCHOLAR_API_KEY from
-    the environment so the backend .env must forward them or they must be
-    set in the shell before starting uvicorn.
+    The server inherits OPENAI_API_KEY and SEMANTIC_SCHOLAR_API_KEY from
+    the environment (main.py loads mcp_server/.env before any call is made).
     """
     env = {
         **os.environ,  # inherit everything, including API keys
@@ -60,22 +59,47 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
     """
     server_params = _build_server_params()
 
+    try:
+        result = await _call_tool_once(server_params, tool_name, arguments)
+    except BaseExceptionGroup as group:
+        # stdio_client runs inside an anyio TaskGroup, so any failure (e.g. the
+        # subprocess crashing on startup) surfaces as an ExceptionGroup rather
+        # than the underlying error. Unwrap it so callers can catch RuntimeError.
+        leaf = _first_leaf_exception(group)
+        if not isinstance(leaf, Exception):
+            raise
+        raise RuntimeError(f"MCP call to '{tool_name}' failed: {leaf}") from group
+    except OSError as e:
+        raise RuntimeError(f"Could not start the MCP server: {e}") from e
+
+    # Raise tool errors *outside* the stdio_client context so they are not
+    # wrapped in an ExceptionGroup by the TaskGroup teardown.
+    if result.isError:
+        error_text = next(
+            (block.text for block in result.content if getattr(block, "text", None)),
+            "Unknown MCP error",
+        )
+        raise RuntimeError(f"MCP tool '{tool_name}' returned an error: {error_text}")
+
+    return _extract_payload(result)
+
+
+async def _call_tool_once(
+    server_params: StdioServerParameters, tool_name: str, arguments: dict[str, Any]
+) -> Any:
+    """Spawn the MCP server, perform the handshake and one tool call, then shut down."""
     async with stdio_client(server_params) as (read_stream, write_stream):
         async with ClientSession(read_stream, write_stream) as session:
-            # Perform the MCP protocol handshake
             await session.initialize()
+            return await session.call_tool(tool_name, arguments=arguments)
 
-            # Call the tool
-            result = await session.call_tool(tool_name, arguments=arguments)
 
-            # The MCP SDK wraps results in a content list; extract the first item
-            if result.isError:
-                error_text = (
-                    result.content[0].text if result.content else "Unknown MCP error"
-                )
-                raise RuntimeError(f"MCP tool '{tool_name}' returned an error: {error_text}")
-
-            return _extract_payload(result)
+def _first_leaf_exception(group: BaseExceptionGroup) -> BaseException:
+    """Return the first non-group exception nested inside an ExceptionGroup."""
+    exc: BaseException = group
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+    return exc
 
 
 def _extract_payload(result: Any) -> Any:
