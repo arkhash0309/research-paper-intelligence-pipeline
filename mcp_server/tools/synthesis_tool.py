@@ -28,7 +28,9 @@ def _get_client() -> OpenAI:
             "OPENAI_API_KEY environment variable is not set. "
             "Copy mcp_server/.env.example to mcp_server/.env and fill in your key."
         )
-    return OpenAI(api_key=api_key)
+    # Fail within the backend's per-tool timeout instead of the SDK default
+    # (10 minutes with 2 retries)
+    return OpenAI(api_key=api_key, timeout=120.0, max_retries=1)
 
 
 def _get_model() -> str:

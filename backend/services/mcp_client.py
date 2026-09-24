@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import asyncio
+
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -21,6 +23,17 @@ from mcp.client.stdio import stdio_client
 _MCP_SERVER_SCRIPT = str(
     Path(__file__).resolve().parent.parent.parent / "mcp_server" / "server.py"
 )
+
+
+# Upper bound for one tool call, including spawning the MCP subprocess.
+# LLM-backed tools get more time than the search/storage tools.
+_DEFAULT_TIMEOUT_S = float(os.environ.get("MCP_TOOL_TIMEOUT", "60"))
+_LLM_TIMEOUT_S = float(os.environ.get("MCP_LLM_TOOL_TIMEOUT", "270"))
+_LLM_TOOLS = {
+    "tool_extract_key_findings",
+    "tool_identify_research_gaps",
+    "tool_synthesise_literature_review",
+}
 
 
 def _build_server_params() -> StdioServerParameters:
@@ -59,8 +72,16 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
     """
     server_params = _build_server_params()
 
+    timeout = _LLM_TIMEOUT_S if tool_name in _LLM_TOOLS else _DEFAULT_TIMEOUT_S
+
     try:
-        result = await _call_tool_once(server_params, tool_name, arguments)
+        result = await asyncio.wait_for(
+            _call_tool_once(server_params, tool_name, arguments), timeout=timeout
+        )
+    except (asyncio.TimeoutError, TimeoutError) as e:
+        raise RuntimeError(
+            f"MCP tool '{tool_name}' timed out after {timeout:.0f}s"
+        ) from e
     except BaseExceptionGroup as group:
         # stdio_client runs inside an anyio TaskGroup, so any failure (e.g. the
         # subprocess crashing on startup) surfaces as an ExceptionGroup rather
