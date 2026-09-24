@@ -5,6 +5,7 @@
  *   idle → fetching_papers → analysing → synthesising → done
  *
  * Exposed API:
+ *   topic       {string}    — topic of the current/last run
  *   papers      {object[]}  — normalised paper list from /start
  *   analysis    {object}    — { themes, findings, gaps } from /analyse
  *   review      {object}    — { review_markdown, saved_filepath, filename } from /synthesise
@@ -30,6 +31,7 @@ export const PIPELINE_STATUS = {
 }
 
 export default function useResearch() {
+  const [topic, setTopic] = useState('')
   const [papers, setPapers] = useState([])
   const [analysis, setAnalysis] = useState(null)
   const [review, setReview] = useState(null)
@@ -108,6 +110,7 @@ export default function useResearch() {
    */
   const runPipeline = useCallback((topic, maxPapers = 10) => {
     runRef.current = { topic, maxPapers, papers: [], analysis: null }
+    setTopic(topic)
     setWarnings([])
     setPapers([])
     setAnalysis(null)
@@ -128,6 +131,7 @@ export default function useResearch() {
   /** Reset all state back to idle */
   const reset = useCallback(() => {
     runRef.current = { topic: '', maxPapers: 10, papers: [], analysis: null }
+    setTopic('')
     setPapers([])
     setAnalysis(null)
     setReview(null)
@@ -138,7 +142,7 @@ export default function useResearch() {
   }, [])
 
   return {
-    papers, analysis, review, status, error, warnings, failedStep,
+    topic, papers, analysis, review, status, error, warnings, failedStep,
     runPipeline, retry, dismissError, reset,
   }
 }

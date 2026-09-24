@@ -8,14 +8,13 @@
  *   4. Retry button (resumes from the failed step if the pipeline errors)
  *   5. LiteratureReview panel (appears after synthesis is done)
  */
-import { useState } from 'react'
 import SearchBar from '../components/SearchBar'
 import PaperCard from '../components/PaperCard'
 import LiteratureReview from '../components/LiteratureReview'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorBanner from '../components/ErrorBanner'
 import PipelineProgress from '../components/PipelineProgress'
-import useResearch, { PIPELINE_STATUS } from '../hooks/useResearch'
+import { PIPELINE_STATUS } from '../hooks/useResearch'
 import { RotateCcw, AlertTriangle } from 'lucide-react'
 
 /** Labels for the retry button, per failed stage */
@@ -32,19 +31,22 @@ const STAGE_MESSAGES = {
   [PIPELINE_STATUS.SYNTHESISING]: 'Writing your literature review…',
 }
 
-export default function HomePage() {
+/**
+ * @param {object} props
+ * @param {object} props.research - State and actions from useResearch(), owned by
+ *   App so a run survives navigating to Saved Reviews and back.
+ */
+export default function HomePage({ research }) {
   const {
-    papers, analysis, review, status, error, warnings, failedStep,
+    topic: currentTopic, papers, analysis, review, status, error, warnings, failedStep,
     runPipeline, retry, dismissError, reset,
-  } = useResearch()
-  const [currentTopic, setCurrentTopic] = useState('')
+  } = research
 
   const isRunning = status !== PIPELINE_STATUS.IDLE && status !== PIPELINE_STATUS.DONE
   const isDone = status === PIPELINE_STATUS.DONE
   const hasPapers = papers.length > 0
 
   function handleSearch(topic, maxPapers) {
-    setCurrentTopic(topic)
     runPipeline(topic, maxPapers)
   }
 
