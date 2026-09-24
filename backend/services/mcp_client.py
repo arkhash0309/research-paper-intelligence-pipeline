@@ -7,6 +7,7 @@ sends JSON-RPC requests, and returns the results.
 Uses the official `mcp` Python SDK client.
 """
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -74,14 +75,36 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
                 )
                 raise RuntimeError(f"MCP tool '{tool_name}' returned an error: {error_text}")
 
-            if not result.content:
-                return None
+            return _extract_payload(result)
 
-            # Tools that return structured data encode it as JSON text
-            import json
-            raw = result.content[0].text
-            try:
-                return json.loads(raw)
-            except (json.JSONDecodeError, TypeError):
-                # Some tools (e.g. synthesise) return plain Markdown strings
-                return raw
+
+def _extract_payload(result: Any) -> Any:
+    """
+    Convert an MCP CallToolResult into a plain Python value.
+
+    FastMCP serialises a list return value as one content block *per item*,
+    so reading only ``content[0]`` silently drops everything after the first
+    element. Tools with a list/str return annotation also publish the complete
+    value as ``structuredContent == {"result": ...}``, which is preferred.
+    Tools returning a bare dict have no structured content and emit a single
+    JSON text block.
+    """
+    structured = getattr(result, "structuredContent", None)
+    if isinstance(structured, dict) and set(structured) == {"result"}:
+        return structured["result"]
+    if structured is not None:
+        return structured
+
+    texts = [block.text for block in result.content if getattr(block, "text", None) is not None]
+    if not texts:
+        return None
+
+    parsed: list[Any] = []
+    for raw in texts:
+        try:
+            parsed.append(json.loads(raw))
+        except (json.JSONDecodeError, TypeError):
+            # Plain-text payloads (e.g. Markdown) are returned as-is
+            parsed.append(raw)
+
+    return parsed[0] if len(parsed) == 1 else parsed
