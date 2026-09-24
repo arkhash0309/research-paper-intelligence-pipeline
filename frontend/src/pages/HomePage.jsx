@@ -5,7 +5,7 @@
  *   1. Hero section with SearchBar
  *   2. PipelineProgress indicator (visible while pipeline is running)
  *   3. Paper results grid
- *   4. "Analyse & Synthesise" button (appears after papers are fetched)
+ *   4. Retry button (resumes from the failed step if the pipeline errors)
  *   5. LiteratureReview panel (appears after synthesis is done)
  */
 import { useState } from 'react'
@@ -16,7 +16,14 @@ import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorBanner from '../components/ErrorBanner'
 import PipelineProgress from '../components/PipelineProgress'
 import useResearch, { PIPELINE_STATUS } from '../hooks/useResearch'
-import { Sparkles, RotateCcw, AlertTriangle } from 'lucide-react'
+import { RotateCcw, AlertTriangle } from 'lucide-react'
+
+/** Labels for the retry button, per failed stage */
+const RETRY_LABELS = {
+  [PIPELINE_STATUS.FETCHING_PAPERS]: 'Retry search',
+  [PIPELINE_STATUS.ANALYSING]: 'Retry analysis',
+  [PIPELINE_STATUS.SYNTHESISING]: 'Retry writing the review',
+}
 
 /** Human-readable loading messages per pipeline stage */
 const STAGE_MESSAGES = {
@@ -26,7 +33,10 @@ const STAGE_MESSAGES = {
 }
 
 export default function HomePage() {
-  const { papers, analysis, review, status, error, warnings, runPipeline, reset } = useResearch()
+  const {
+    papers, analysis, review, status, error, warnings, failedStep,
+    runPipeline, retry, dismissError, reset,
+  } = useResearch()
   const [currentTopic, setCurrentTopic] = useState('')
 
   const isRunning = status !== PIPELINE_STATUS.IDLE && status !== PIPELINE_STATUS.DONE
@@ -54,7 +64,20 @@ export default function HomePage() {
 
       {/* ── Error banner ── */}
       {error && (
-        <ErrorBanner message={error} onDismiss={reset} />
+        <div className="space-y-3">
+          <ErrorBanner message={error} onDismiss={dismissError} />
+          {failedStep && !isRunning && (
+            <div className="flex justify-center">
+              <button
+                onClick={retry}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-accent-600 hover:bg-accent-700 text-white font-medium transition-colors"
+              >
+                <RotateCcw size={16} />
+                {RETRY_LABELS[failedStep] || 'Retry'}
+              </button>
+            </div>
+          )}
+        </div>
       )}
 
       {/* ── Non-fatal warnings (e.g. one search source unavailable) ── */}
@@ -87,7 +110,7 @@ export default function HomePage() {
             <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-200">
               {papers.length} papers found
             </h2>
-            {isDone && (
+            {!isRunning && (
               <button
                 onClick={reset}
                 className="flex items-center gap-1.5 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
@@ -103,18 +126,6 @@ export default function HomePage() {
             ))}
           </div>
 
-          {/* "Analyse & Synthesise" button — shown after papers load but pipeline is idle */}
-          {status === PIPELINE_STATUS.IDLE && hasPapers && !isDone && (
-            <div className="flex justify-center pt-2">
-              <button
-                onClick={() => runPipeline(currentTopic)}
-                className="flex items-center gap-2 px-6 py-3 rounded-xl bg-accent-600 hover:bg-accent-700 text-white font-medium transition-colors"
-              >
-                <Sparkles size={18} />
-                Analyse &amp; Synthesise
-              </button>
-            </div>
-          )}
         </section>
       )}
 
