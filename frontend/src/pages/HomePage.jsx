@@ -67,19 +67,19 @@ export default function HomePage({ research }) {
 
       {/* ── Error banner ── */}
       {error && (
-        <div className="space-y-3">
-          <ErrorBanner message={error} onDismiss={dismissError} />
-          {failedStep && !isRunning && (
-            <div className="flex justify-center">
-              <button
-                onClick={retry}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-accent-600 hover:bg-accent-700 text-white font-medium transition-colors"
-              >
-                <RotateCcw size={16} />
-                {RETRY_LABELS[failedStep] || 'Retry'}
-              </button>
-            </div>
-          )}
+        <ErrorBanner message={error} onDismiss={dismissError} />
+      )}
+
+      {/* ── Retry — stays available after the error banner is dismissed ── */}
+      {failedStep && !isRunning && (
+        <div className="flex justify-center">
+          <button
+            onClick={retry}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-accent-600 hover:bg-accent-700 text-white font-medium transition-colors"
+          >
+            <RotateCcw size={16} />
+            {RETRY_LABELS[failedStep] || 'Retry'}
+          </button>
         </div>
       )}
 
