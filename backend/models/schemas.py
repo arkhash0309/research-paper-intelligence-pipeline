@@ -15,19 +15,23 @@ from pydantic import BaseModel, Field
 class StartResearchRequest(BaseModel):
     """Body for POST /api/research/start"""
     topic: str = Field(..., description="Research topic to search for", min_length=3)
-    max_papers: int = Field(10, description="Max papers to fetch per source", ge=1, le=50)
+    max_papers: int = Field(10, description="Max papers to fetch per source", ge=1, le=25)
 
 
 class AnalyseRequest(BaseModel):
     """Body for POST /api/research/analyse"""
-    topic: str = Field(..., description="Research topic")
-    papers: list[dict[str, Any]] = Field(..., description="List of normalised paper dicts")
+    topic: str = Field(..., description="Research topic", min_length=1)
+    papers: list[dict[str, Any]] = Field(
+        ..., description="List of normalised paper dicts", min_length=1
+    )
 
 
 class SynthesiseRequest(BaseModel):
     """Body for POST /api/research/synthesise"""
-    topic: str = Field(..., description="Research topic")
-    papers: list[dict[str, Any]] = Field(..., description="List of normalised paper dicts")
+    topic: str = Field(..., description="Research topic", min_length=1)
+    papers: list[dict[str, Any]] = Field(
+        ..., description="List of normalised paper dicts", min_length=1
+    )
     findings: dict[str, Any] = Field(..., description="Output from /analyse (findings)")
     gaps: dict[str, Any] = Field(..., description="Output from /analyse (gaps)")
 
@@ -60,6 +64,9 @@ class StartResearchResponse(BaseModel):
     papers: list[dict[str, Any]]
     total: int
     sources: SourceBreakdown
+    warnings: list[str] = Field(
+        default_factory=list, description="Non-fatal problems, e.g. one source failing"
+    )
 
 
 class AnalyseResponse(BaseModel):

@@ -3,12 +3,14 @@ research.py — FastAPI router for all /api/research endpoints.
 
 Endpoint summary:
     POST /api/research/start      — search arXiv + Semantic Scholar, deduplicate
-    POST /api/research/analyse    — extract findings and identify gaps via Claude
-    POST /api/research/synthesise — generate and save a literature review via Claude
+    POST /api/research/analyse    — extract findings and identify gaps via OpenAI
+    POST /api/research/synthesise — generate and save a literature review via OpenAI
     GET  /api/research/history    — list all saved reviews
     GET  /api/research/review/{filename} — fetch a specific saved review
 """
 
+import asyncio
+import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -38,34 +40,49 @@ async def start_research(body: StartResearchRequest) -> StartResearchResponse:
     Search arXiv and Semantic Scholar for papers on the given topic.
 
     Steps:
-    1. Call tool_search_arxiv to fetch papers from arXiv.
-    2. Call tool_search_semantic_scholar to fetch papers from Semantic Scholar.
-    3. Normalise both result sets using parse_paper (via the MCP paper_parser tool).
-    4. Deduplicate by title similarity.
+    1. Call tool_search_arxiv and tool_search_semantic_scholar concurrently.
+    2. Normalise both result sets into a common schema.
+    3. Deduplicate by normalised title.
     5. Return the combined, deduplicated list with source breakdown.
 
     Raises:
-        HTTPException 502: If either search call fails.
+        HTTPException 502: If both search calls fail. If only one fails, its
+            error is returned in ``warnings`` alongside the other source's papers.
     """
-    # Run both searches — errors are surfaced as HTTPException
-    try:
-        arxiv_papers: list[dict[str, Any]] = await call_tool(
-            "tool_search_arxiv",
-            {"query": body.topic, "max_results": body.max_papers},
-        )
-    except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=f"arXiv search failed: {e}")
-
-    try:
-        ss_papers: list[dict[str, Any]] = await call_tool(
+    # Run both searches concurrently; one source failing (e.g. a Semantic
+    # Scholar 429) should not sink the whole run.
+    arxiv_result, ss_result = await asyncio.gather(
+        call_tool("tool_search_arxiv", {"query": body.topic, "max_results": body.max_papers}),
+        call_tool(
             "tool_search_semantic_scholar",
             {"query": body.topic, "max_results": body.max_papers},
-        )
-    except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=f"Semantic Scholar search failed: {e}")
+        ),
+        return_exceptions=True,
+    )
 
-    # Normalise and deduplicate inline (avoids an extra MCP round-trip for a simple operation)
-    all_papers = _normalise_and_deduplicate(arxiv_papers or [], ss_papers or [])
+    failures: list[str] = []
+    raw_results: list[list[dict[str, Any]]] = []
+    for label, result in (("arXiv", arxiv_result), ("Semantic Scholar", ss_result)):
+        if isinstance(result, BaseException):
+            if not isinstance(result, Exception):
+                raise result  # e.g. CancelledError — don't swallow it
+            failures.append(f"{label}: {result}")
+            raw_results.append([])
+        else:
+            raw_results.append(result if isinstance(result, list) else [])
+
+    if len(failures) == 2:
+        raise HTTPException(
+            status_code=502,
+            detail="Both paper searches failed. " + " | ".join(failures),
+        )
+
+    warnings = [
+        f"Search failed for {failure} — showing results from the other source only."
+        for failure in failures
+    ]
+
+    all_papers = _normalise_and_deduplicate(raw_results[0], raw_results[1])
 
     sources = SourceBreakdown(
         arxiv=sum(1 for p in all_papers if p.get("source") == "arxiv"),
@@ -78,7 +95,23 @@ async def start_research(body: StartResearchRequest) -> StartResearchResponse:
         papers=all_papers,
         total=len(all_papers),
         sources=sources,
+        warnings=warnings,
     )
+
+
+def _clean_text(value: Any) -> str:
+    """Return value as a single-line string with collapsed whitespace ('' for None)."""
+    if value is None:
+        return ""
+    return " ".join(str(value).split())
+
+
+def _to_int(value: Any) -> int | None:
+    """Best-effort int conversion that returns None instead of raising."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _normalise_paper(raw: dict[str, Any]) -> dict[str, Any]:
@@ -86,7 +119,8 @@ def _normalise_paper(raw: dict[str, Any]) -> dict[str, Any]:
     Normalise a raw paper dict from arXiv or Semantic Scholar into a common schema.
 
     Produces a dict with keys: id, title, authors, abstract, year, source,
-    url, pdf_url, citation_count.
+    url, pdf_url, citation_count. Null or missing fields from the upstream
+    APIs are replaced with safe defaults.
 
     Args:
         raw: Raw paper dict from one of the search tools.
@@ -94,33 +128,38 @@ def _normalise_paper(raw: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Normalised paper dict.
     """
-    source = raw.get("source", "unknown")
+    source = raw.get("source") or "unknown"
 
     if source == "arxiv":
-        paper_id = raw.get("arxiv_id", "")
+        paper_id = _clean_text(raw.get("arxiv_id"))
         url = f"https://arxiv.org/abs/{paper_id}" if paper_id else ""
-        pdf_url = raw.get("pdf_url", "")
-        published_date = raw.get("published_date", "")
-        year: int | None = int(published_date[:4]) if len(published_date) >= 4 else None
-        citation_count = raw.get("citation_count", 0)
+        year = _to_int(_clean_text(raw.get("published_date"))[:4])
     else:
-        paper_id = raw.get("paper_id", "")
-        url = raw.get("url", "")
-        pdf_url = raw.get("pdf_url", "")
-        year = raw.get("year")
-        citation_count = raw.get("citation_count", 0)
+        paper_id = _clean_text(raw.get("paper_id"))
+        url = _clean_text(raw.get("url"))
+        year = _to_int(raw.get("year"))
 
     return {
         "id": paper_id,
-        "title": raw.get("title", "").strip(),
-        "authors": raw.get("authors", ""),
-        "abstract": raw.get("abstract", "").strip(),
+        "title": _clean_text(raw.get("title")),
+        "authors": _clean_text(raw.get("authors")),
+        "abstract": _clean_text(raw.get("abstract")),
         "year": year,
         "source": source,
         "url": url,
-        "pdf_url": pdf_url,
-        "citation_count": citation_count,
+        "pdf_url": _clean_text(raw.get("pdf_url")),
+        "citation_count": _to_int(raw.get("citation_count")) or 0,
     }
+
+
+def _title_key(title: str) -> str:
+    """
+    Build a comparison key for duplicate detection.
+
+    Lowercases and strips punctuation/whitespace differences so that e.g.
+    "Attention Is All You Need" and "Attention is all you need." match.
+    """
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", title.lower()).split())
 
 
 def _normalise_and_deduplicate(
@@ -131,7 +170,7 @@ def _normalise_and_deduplicate(
     Merge two raw paper lists, normalise each entry, and deduplicate by title.
 
     arXiv entries are preferred over Semantic Scholar duplicates because they
-    carry PDF links.
+    carry PDF links; the Semantic Scholar citation count is kept when merging.
 
     Args:
         arxiv_papers: Raw dicts from tool_search_arxiv.
@@ -140,24 +179,32 @@ def _normalise_and_deduplicate(
     Returns:
         Deduplicated, normalised list of paper dicts.
     """
-    # _normalise_paper is defined below in this module
+    normalised = [
+        _normalise_paper(paper)
+        for paper in [*arxiv_papers, *ss_papers]
+        if isinstance(paper, dict)
+    ]
 
-    normalised: list[dict[str, Any]] = []
-    for paper in arxiv_papers:
-        normalised.append(_normalise_paper(paper))
-    for paper in ss_papers:
-        normalised.append(_normalise_paper(paper))
-
-    # Deduplicate: prefer arXiv version when title matches
     seen: dict[str, dict[str, Any]] = {}
     for paper in normalised:
-        key = paper.get("title", "").lower().strip()
+        key = _title_key(paper["title"])
         if not key:
+            continue  # Skip papers with no usable title
+        existing = seen.get(key)
+        if existing is None:
+            seen[key] = paper
             continue
-        if key not in seen:
-            seen[key] = paper
-        elif seen[key].get("source") != "arxiv" and paper.get("source") == "arxiv":
-            seen[key] = paper
+
+        # Keep the arXiv record, but carry over the richer metadata from the duplicate
+        preferred, other = (
+            (paper, existing)
+            if existing["source"] != "arxiv" and paper["source"] == "arxiv"
+            else (existing, paper)
+        )
+        preferred["citation_count"] = max(preferred["citation_count"], other["citation_count"])
+        preferred["abstract"] = preferred["abstract"] or other["abstract"]
+        preferred["year"] = preferred["year"] or other["year"]
+        seen[key] = preferred
 
     return list(seen.values())
 
@@ -177,7 +224,7 @@ async def analyse_papers(body: AnalyseRequest) -> AnalyseResponse:
     4. Return combined analysis.
 
     Raises:
-        HTTPException 502: If either Claude API call fails.
+        HTTPException 502: If either OpenAI call fails.
     """
     try:
         findings: dict[str, Any] = await call_tool(
@@ -224,7 +271,7 @@ async def synthesise_review(body: SynthesiseRequest) -> SynthesiseResponse:
     3. Return the Markdown and the saved file path.
 
     Raises:
-        HTTPException 502: If the Claude API call or file save fails.
+        HTTPException 502: If the OpenAI call or file save fails.
     """
     try:
         review_markdown: str = await call_tool(
@@ -314,6 +361,7 @@ async def get_review(filename: str) -> dict[str, Any]:
         Full review record dict.
 
     Raises:
+        HTTPException 400: If the filename is not a plain *.json name.
         HTTPException 404: If the file does not exist.
         HTTPException 502: If the MCP call fails unexpectedly.
     """
@@ -323,6 +371,8 @@ async def get_review(filename: str) -> dict[str, Any]:
         )
     except RuntimeError as e:
         error_str = str(e)
+        if "invalid review filename" in error_str.lower():
+            raise HTTPException(status_code=400, detail=f"Invalid review filename: {filename}")
         if "not found" in error_str.lower():
             raise HTTPException(status_code=404, detail=f"Review not found: {filename}")
         raise HTTPException(status_code=502, detail=f"Failed to load review: {e}")

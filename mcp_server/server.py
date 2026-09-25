@@ -1,11 +1,12 @@
 """
 server.py — MCP server entry point for the Research Paper Intelligence Pipeline.
 
-Registers all 7 tools and exposes them over stdio (standard MCP transport).
+Registers all 9 tools and exposes them over stdio (standard MCP transport).
 Run with:  python mcp_server/server.py
 
 Environment variables (set in mcp_server/.env):
-    ANTHROPIC_API_KEY        — required for synthesis tools
+    OPENAI_API_KEY           — required for synthesis tools
+    OPENAI_MODEL             — optional; chat model (default gpt-5.4)
     SEMANTIC_SCHOLAR_API_KEY — optional; increases rate limits
 """
 
@@ -19,7 +20,6 @@ load_dotenv(dotenv_path=_env_path)
 from mcp.server.fastmcp import FastMCP
 from tools.arxiv_tool import search_arxiv, fetch_paper_details
 from tools.semantic_scholar_tool import search_semantic_scholar
-from tools.paper_parser_tool import parse_paper, deduplicate_papers
 from tools.synthesis_tool import (
     extract_key_findings,
     identify_research_gaps,
@@ -90,7 +90,7 @@ async def tool_fetch_paper_details(arxiv_id: str) -> dict:
 @mcp.tool()
 def tool_extract_key_findings(papers: list[dict], topic: str) -> dict:
     """
-    Use Claude to extract key themes, per-paper findings, and methodologies.
+    Use OpenAI to extract key themes, per-paper findings, and methodologies.
 
     Args:
         papers: List of paper dicts (must include title, abstract, year).
@@ -108,7 +108,7 @@ def tool_extract_key_findings(papers: list[dict], topic: str) -> dict:
 @mcp.tool()
 def tool_identify_research_gaps(themes: list[str], findings: list[str]) -> dict:
     """
-    Use Claude to identify research gaps, open questions, and debates.
+    Use OpenAI to identify research gaps, open questions, and debates.
 
     Args:
         themes: List of theme strings from extract_key_findings.
@@ -128,7 +128,7 @@ def tool_synthesise_literature_review(
     topic: str, papers: list[dict], findings: dict, gaps: dict
 ) -> str:
     """
-    Use Claude to write a structured literature review in Markdown (600–900 words).
+    Use OpenAI to write a structured literature review in Markdown (600–900 words).
 
     Args:
         topic: The research topic string.

@@ -3,15 +3,26 @@
  *
  * Handles routing between the HomePage (search + results) and the
  * ReviewPage (saved review history). Also owns the dark/light mode toggle
- * state so it can be passed down via props.
+ * and the research pipeline state so both survive route changes.
  */
 import React, { useState, useEffect } from 'react'
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, Link, NavLink } from 'react-router-dom'
 import HomePage from './pages/HomePage'
 import ReviewPage from './pages/ReviewPage'
+import useResearch from './hooks/useResearch'
 import { Moon, Sun, FlaskConical } from 'lucide-react'
 
+/** Tailwind classes for nav links, highlighting the active route */
+function navLinkClass({ isActive }) {
+  return `text-sm transition-colors hover:text-accent-600 dark:hover:text-accent-400 ${
+    isActive ? 'text-accent-600 dark:text-accent-400 font-medium' : 'text-slate-600 dark:text-slate-400'
+  }`
+}
+
 export default function App() {
+  /** Pipeline state lives here (not in HomePage) so it persists across routes */
+  const research = useResearch()
+
   /** dark — whether dark mode is active */
   const [dark, setDark] = useState(() => {
     const saved = localStorage.getItem('theme')
@@ -36,19 +47,20 @@ export default function App() {
       <nav className="sticky top-0 z-10 border-b border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
           {/* Brand */}
-          <a href="/" className="flex items-center gap-2 font-semibold text-accent-600 dark:text-accent-400 hover:opacity-80 transition-opacity">
+          <Link to="/" className="flex items-center gap-2 font-semibold text-accent-600 dark:text-accent-400 hover:opacity-80 transition-opacity">
             <FlaskConical size={20} />
             <span>ResearchPipeline</span>
-          </a>
+          </Link>
 
           {/* Navigation links + theme toggle */}
           <div className="flex items-center gap-4">
-            <a href="/" className="text-sm text-slate-600 dark:text-slate-400 hover:text-accent-600 dark:hover:text-accent-400 transition-colors">
+            {/* Client-side links keep in-memory pipeline state (no full page reload) */}
+            <NavLink to="/" end className={navLinkClass}>
               Search
-            </a>
-            <a href="/reviews" className="text-sm text-slate-600 dark:text-slate-400 hover:text-accent-600 dark:hover:text-accent-400 transition-colors">
+            </NavLink>
+            <NavLink to="/reviews" className={navLinkClass}>
               Saved Reviews
-            </a>
+            </NavLink>
 
             {/* Dark / light mode toggle button */}
             <button
@@ -65,7 +77,7 @@ export default function App() {
       {/* Page content */}
       <main className="max-w-6xl mx-auto px-4 py-8">
         <Routes>
-          <Route path="/" element={<HomePage />} />
+          <Route path="/" element={<HomePage research={research} />} />
           <Route path="/reviews" element={<ReviewPage />} />
           <Route path="/reviews/:filename" element={<ReviewPage />} />
         </Routes>

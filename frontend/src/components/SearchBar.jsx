@@ -8,6 +8,9 @@
 import { useState } from 'react'
 import { Search } from 'lucide-react'
 
+/** Matches the backend's min_length for StartResearchRequest.topic */
+const MIN_TOPIC_LENGTH = 3
+
 export default function SearchBar({ onSearch, disabled = false }) {
   const [topic, setTopic] = useState('')
   const [maxPapers, setMaxPapers] = useState(10)
@@ -15,7 +18,7 @@ export default function SearchBar({ onSearch, disabled = false }) {
   function handleSubmit(e) {
     e.preventDefault()
     const trimmed = topic.trim()
-    if (!trimmed) return
+    if (trimmed.length < MIN_TOPIC_LENGTH) return
     onSearch(trimmed, maxPapers)
   }
 
@@ -40,7 +43,7 @@ export default function SearchBar({ onSearch, disabled = false }) {
 
         <button
           type="submit"
-          disabled={disabled || !topic.trim()}
+          disabled={disabled || topic.trim().length < MIN_TOPIC_LENGTH}
           className="px-5 py-3 rounded-xl bg-accent-600 hover:bg-accent-700 text-white font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
         >
           Find Papers

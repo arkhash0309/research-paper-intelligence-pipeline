@@ -11,8 +11,15 @@ import axios from 'axios'
 const api = axios.create({
   baseURL: '/api',
   headers: { 'Content-Type': 'application/json' },
-  timeout: 120_000, // Claude API calls can be slow — allow 2 minutes
+  timeout: 90_000, // search / history calls
 })
+
+/**
+ * Model-backed calls can take several minutes (reasoning models, many papers).
+ * Must exceed the backend's MCP_LLM_TOOL_TIMEOUT (270s) so the backend's
+ * readable timeout error reaches the user first.
+ */
+const LLM_TIMEOUT_MS = 600_000
 
 /**
  * POST /api/research/start
@@ -44,7 +51,11 @@ export async function startResearch(topic, maxPapers = 10) {
  */
 export async function analysePapers(topic, papers) {
   try {
-    const { data } = await api.post('/research/analyse', { topic, papers })
+    const { data } = await api.post(
+      '/research/analyse',
+      { topic, papers },
+      { timeout: LLM_TIMEOUT_MS }
+    )
     return data
   } catch (err) {
     throw new Error(_extractMessage(err, 'Failed to analyse papers'))
@@ -68,7 +79,7 @@ export async function synthesiseReview(topic, papers, findings, gaps) {
       papers,
       findings,
       gaps,
-    })
+    }, { timeout: LLM_TIMEOUT_MS })
     return data
   } catch (err) {
     throw new Error(_extractMessage(err, 'Failed to synthesise literature review'))
@@ -115,7 +126,16 @@ export async function getReview(filename) {
  */
 function _extractMessage(err, fallback) {
   if (axios.isAxiosError(err)) {
-    return err.response?.data?.detail || err.message || fallback
+    const detail = err.response?.data?.detail
+    // FastAPI validation errors (422) return detail as an array of objects
+    if (Array.isArray(detail)) {
+      return detail.map(d => d?.msg || JSON.stringify(d)).join('; ') || fallback
+    }
+    if (typeof detail === 'string' && detail) return detail
+    if (err.code === 'ECONNABORTED') {
+      return `${fallback}: the request timed out. The backend may still be working — please try again.`
+    }
+    return err.message || fallback
   }
   return err?.message || fallback
 }

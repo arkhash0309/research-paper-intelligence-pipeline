@@ -59,13 +59,13 @@ async def search_semantic_scholar(
         raise RuntimeError(f"Network error contacting Semantic Scholar API: {e}") from e
 
     data = response.json()
-    raw_papers: list[dict] = data.get("data", [])
+    raw_papers: list[dict] = data.get("data") or []
 
     papers: list[dict[str, Any]] = []
     for paper in raw_papers:
         # Flatten authors list to a comma-separated string
         authors = ", ".join(
-            a.get("name", "Unknown") for a in paper.get("authors", [])
+            (a.get("name") or "Unknown") for a in (paper.get("authors") or [])
         )
 
         # Construct a direct URL if not provided
@@ -76,12 +76,12 @@ async def search_semantic_scholar(
 
         papers.append(
             {
-                "title": paper.get("title", ""),
+                "title": paper.get("title") or "",
                 "authors": authors,
                 "abstract": paper.get("abstract") or "",
                 "paper_id": paper_id,
                 "year": paper.get("year"),
-                "citation_count": paper.get("citationCount", 0),
+                "citation_count": paper.get("citationCount") or 0,
                 "url": url,
                 "source": "semantic_scholar",
             }

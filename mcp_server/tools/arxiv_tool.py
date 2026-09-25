@@ -2,12 +2,45 @@
 arxiv_tool.py — Tool for searching and fetching papers from the arXiv API.
 
 Uses the public arXiv Atom/RSS API (no API key required).
-Endpoint: http://export.arxiv.org/api/query
+Endpoint: https://export.arxiv.org/api/query
 """
+
+import re
 
 import httpx
 import feedparser
 from typing import Any
+
+ARXIV_API_URL = "https://export.arxiv.org/api/query"
+
+
+def _build_search_query(query: str, operator: str = "AND") -> str:
+    """
+    Build an arXiv search_query string from free text.
+
+    "transformer attention mechanisms" becomes
+    "all:transformer AND all:attention AND all:mechanisms". A bare
+    "all:transformer attention mechanisms" only scopes the first term to the
+    all: field, which gives poor relevance. Characters that have meaning in
+    arXiv query syntax (quotes, parentheses, colons) are stripped.
+    """
+    terms = re.findall(r"[\w\-]+", query)
+    if not terms:
+        return f"all:{query.strip()}"
+    return f" {operator} ".join(f"all:{term}" for term in terms)
+
+
+async def _query_arxiv(params: dict[str, Any], error_context: str) -> str:
+    """GET the arXiv API and return the Atom XML body, raising RuntimeError on failure."""
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            response = await client.get(ARXIV_API_URL, params=params)
+            response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        raise RuntimeError(f"arXiv API returned HTTP {e.response.status_code}") from e
+    except httpx.RequestError as e:
+        raise RuntimeError(f"Network error {error_context}: {e}") from e
+    return response.text
 
 
 async def search_arxiv(query: str, max_results: int = 10) -> list[dict[str, Any]]:
@@ -25,26 +58,22 @@ async def search_arxiv(query: str, max_results: int = 10) -> list[dict[str, Any]
     Raises:
         RuntimeError: If the arXiv API call fails.
     """
-    base_url = "http://export.arxiv.org/api/query"
     params = {
-        "search_query": f"all:{query}",
+        "search_query": _build_search_query(query, "AND"),
         "start": 0,
         "max_results": max_results,
         "sortBy": "relevance",
         "sortOrder": "descending",
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(base_url, params=params)
-            response.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        raise RuntimeError(f"arXiv API returned HTTP {e.response.status_code}: {e.response.text}") from e
-    except httpx.RequestError as e:
-        raise RuntimeError(f"Network error contacting arXiv API: {e}") from e
-
     # feedparser handles Atom XML parsing
-    feed = feedparser.parse(response.text)
+    feed = feedparser.parse(await _query_arxiv(params, "contacting arXiv API"))
+
+    # Requiring every term can be too strict for long natural-language topics;
+    # fall back to matching any term (still relevance-ranked) if nothing matched.
+    if not feed.entries and len(query.split()) > 1:
+        params["search_query"] = _build_search_query(query, "OR")
+        feed = feedparser.parse(await _query_arxiv(params, "contacting arXiv API"))
 
     papers: list[dict[str, Any]] = []
     for entry in feed.entries:
@@ -60,7 +89,8 @@ async def search_arxiv(query: str, max_results: int = 10) -> list[dict[str, Any]
         pdf_url = ""
         for link in entry.get("links", []):
             if link.get("type") == "application/pdf":
-                pdf_url = link.get("href", "")
+                # The Atom feed still lists http:// links; arXiv serves https
+                pdf_url = link.get("href", "").replace("http://", "https://", 1)
                 break
         # Fallback: construct PDF URL from arxiv_id
         if not pdf_url and arxiv_id:
@@ -94,22 +124,12 @@ async def fetch_paper_details(arxiv_id: str) -> dict[str, Any]:
     Raises:
         RuntimeError: If the paper cannot be fetched or is not found.
     """
-    base_url = "http://export.arxiv.org/api/query"
     params = {
         "id_list": arxiv_id,
         "max_results": 1,
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(base_url, params=params)
-            response.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        raise RuntimeError(f"arXiv API returned HTTP {e.response.status_code}") from e
-    except httpx.RequestError as e:
-        raise RuntimeError(f"Network error fetching paper {arxiv_id}: {e}") from e
-
-    feed = feedparser.parse(response.text)
+    feed = feedparser.parse(await _query_arxiv(params, f"fetching paper {arxiv_id}"))
 
     if not feed.entries:
         raise RuntimeError(f"No paper found for arXiv ID: {arxiv_id}")
@@ -122,7 +142,7 @@ async def fetch_paper_details(arxiv_id: str) -> dict[str, Any]:
     pdf_url = ""
     for link in entry.get("links", []):
         if link.get("type") == "application/pdf":
-            pdf_url = link.get("href", "")
+            pdf_url = link.get("href", "").replace("http://", "https://", 1)
             break
     if not pdf_url:
         pdf_url = f"https://arxiv.org/pdf/{arxiv_id}"

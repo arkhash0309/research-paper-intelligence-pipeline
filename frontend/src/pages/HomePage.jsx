@@ -5,36 +5,49 @@
  *   1. Hero section with SearchBar
  *   2. PipelineProgress indicator (visible while pipeline is running)
  *   3. Paper results grid
- *   4. "Analyse & Synthesise" button (appears after papers are fetched)
+ *   4. Retry button (resumes from the failed step if the pipeline errors)
  *   5. LiteratureReview panel (appears after synthesis is done)
  */
-import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import SearchBar from '../components/SearchBar'
 import PaperCard from '../components/PaperCard'
 import LiteratureReview from '../components/LiteratureReview'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorBanner from '../components/ErrorBanner'
 import PipelineProgress from '../components/PipelineProgress'
-import useResearch, { PIPELINE_STATUS } from '../hooks/useResearch'
-import { Sparkles, RotateCcw } from 'lucide-react'
+import { PIPELINE_STATUS } from '../hooks/useResearch'
+import { RotateCcw, AlertTriangle } from 'lucide-react'
+
+/** Labels for the retry button, per failed stage */
+const RETRY_LABELS = {
+  [PIPELINE_STATUS.FETCHING_PAPERS]: 'Retry search',
+  [PIPELINE_STATUS.ANALYSING]: 'Retry analysis',
+  [PIPELINE_STATUS.SYNTHESISING]: 'Retry writing the review',
+}
 
 /** Human-readable loading messages per pipeline stage */
 const STAGE_MESSAGES = {
   [PIPELINE_STATUS.FETCHING_PAPERS]: 'Searching arXiv and Semantic Scholar…',
-  [PIPELINE_STATUS.ANALYSING]: 'Extracting findings with Claude AI…',
+  [PIPELINE_STATUS.ANALYSING]: 'Extracting findings with OpenAI…',
   [PIPELINE_STATUS.SYNTHESISING]: 'Writing your literature review…',
 }
 
-export default function HomePage() {
-  const { papers, analysis, review, status, error, runPipeline, reset } = useResearch()
-  const [currentTopic, setCurrentTopic] = useState('')
+/**
+ * @param {object} props
+ * @param {object} props.research - State and actions from useResearch(), owned by
+ *   App so a run survives navigating to Saved Reviews and back.
+ */
+export default function HomePage({ research }) {
+  const {
+    topic: currentTopic, papers, analysis, review, status, error, warnings, failedStep,
+    runPipeline, retry, dismissError, reset,
+  } = research
 
   const isRunning = status !== PIPELINE_STATUS.IDLE && status !== PIPELINE_STATUS.DONE
   const isDone = status === PIPELINE_STATUS.DONE
   const hasPapers = papers.length > 0
 
   function handleSearch(topic, maxPapers) {
-    setCurrentTopic(topic)
     runPipeline(topic, maxPapers)
   }
 
@@ -47,14 +60,40 @@ export default function HomePage() {
         </h1>
         <p className="text-slate-500 dark:text-slate-400 max-w-xl mx-auto">
           Enter a research topic and the pipeline will search arXiv & Semantic Scholar,
-          extract key findings, and generate a structured literature review — all with Claude AI.
+          extract key findings, and generate a structured literature review — powered by OpenAI.
         </p>
         <SearchBar onSearch={handleSearch} disabled={isRunning} />
       </section>
 
       {/* ── Error banner ── */}
       {error && (
-        <ErrorBanner message={error} onDismiss={reset} />
+        <ErrorBanner message={error} onDismiss={dismissError} />
+      )}
+
+      {/* ── Retry — stays available after the error banner is dismissed ── */}
+      {failedStep && !isRunning && (
+        <div className="flex justify-center">
+          <button
+            onClick={retry}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-accent-600 hover:bg-accent-700 text-white font-medium transition-colors"
+          >
+            <RotateCcw size={16} />
+            {RETRY_LABELS[failedStep] || 'Retry'}
+          </button>
+        </div>
+      )}
+
+      {/* ── Non-fatal warnings (e.g. one search source unavailable) ── */}
+      {warnings.length > 0 && (
+        <div
+          role="status"
+          className="flex items-start gap-3 p-4 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300"
+        >
+          <AlertTriangle size={18} className="flex-shrink-0 mt-0.5" />
+          <ul className="flex-1 text-sm space-y-1">
+            {warnings.map((w, i) => <li key={i}>{w}</li>)}
+          </ul>
+        </div>
       )}
 
       {/* ── Pipeline progress steps ── */}
@@ -74,7 +113,7 @@ export default function HomePage() {
             <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-200">
               {papers.length} papers found
             </h2>
-            {isDone && (
+            {!isRunning && (
               <button
                 onClick={reset}
                 className="flex items-center gap-1.5 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
@@ -90,18 +129,6 @@ export default function HomePage() {
             ))}
           </div>
 
-          {/* "Analyse & Synthesise" button — shown after papers load but pipeline is idle */}
-          {status === PIPELINE_STATUS.IDLE && hasPapers && !isDone && (
-            <div className="flex justify-center pt-2">
-              <button
-                onClick={() => runPipeline(currentTopic)}
-                className="flex items-center gap-2 px-6 py-3 rounded-xl bg-accent-600 hover:bg-accent-700 text-white font-medium transition-colors"
-              >
-                <Sparkles size={18} />
-                Analyse &amp; Synthesise
-              </button>
-            </div>
-          )}
         </section>
       )}
 
@@ -143,7 +170,13 @@ export default function HomePage() {
           />
           {review.filename && (
             <p className="text-xs text-slate-400 dark:text-slate-500 text-right">
-              Saved as <code>{review.filename}</code>
+              Saved as{' '}
+              <Link
+                to={`/reviews/${encodeURIComponent(review.filename)}`}
+                className="text-accent-600 dark:text-accent-400 hover:underline"
+              >
+                <code>{review.filename}</code>
+              </Link>
             </p>
           )}
         </section>

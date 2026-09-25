@@ -1,15 +1,18 @@
 """
 synthesis_tool.py — Tools that call the OpenAI API to extract insights and synthesise reviews.
 
-All OpenAI calls use gpt-5.4.
-API key is read from the OPENAI_API_KEY environment variable.
+The model defaults to gpt-5.4 and can be overridden with the OPENAI_MODEL
+environment variable. API key is read from the OPENAI_API_KEY environment variable.
 """
 
 import os
 import json
+import re
 from typing import Any
 
 from openai import OpenAI, APIError
+
+DEFAULT_MODEL = "gpt-5.4"
 
 
 def _get_client() -> OpenAI:
@@ -25,14 +28,81 @@ def _get_client() -> OpenAI:
             "OPENAI_API_KEY environment variable is not set. "
             "Copy mcp_server/.env.example to mcp_server/.env and fill in your key."
         )
-    return OpenAI(api_key=api_key)
+    # Fail within the backend's per-tool timeout instead of the SDK default
+    # (10 minutes with 2 retries)
+    return OpenAI(api_key=api_key, timeout=120.0, max_retries=1)
+
+
+def _get_model() -> str:
+    """Return the chat model to use (overridable via OPENAI_MODEL)."""
+    return os.environ.get("OPENAI_MODEL", "").strip() or DEFAULT_MODEL
+
+
+def _chat(prompt: str, max_completion_tokens: int, json_mode: bool, step: str) -> str:
+    """
+    Send a single-turn chat completion and return the text content.
+
+    Uses ``max_completion_tokens`` (GPT-5 family and reasoning models reject
+    the legacy ``max_tokens`` parameter). Reasoning tokens count against this
+    budget, so callers pass generous limits.
+
+    Raises:
+        RuntimeError: On API errors, empty content, or a truncated response.
+    """
+    client = _get_client()
+    kwargs: dict[str, Any] = {
+        "model": _get_model(),
+        "max_completion_tokens": max_completion_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+
+    try:
+        response = client.chat.completions.create(**kwargs)
+    except APIError as e:
+        raise RuntimeError(f"OpenAI API error in {step}: {e}") from e
+
+    choice = response.choices[0]
+    content = (choice.message.content or "").strip()
+    if choice.finish_reason == "length":
+        raise RuntimeError(
+            f"OpenAI response for {step} was cut off at the token limit "
+            f"({max_completion_tokens}). Try fewer papers."
+        )
+    if not content:
+        raise RuntimeError(f"OpenAI returned an empty response for {step}.")
+    return content
+
+
+def _parse_json_object(raw_text: str, step: str) -> dict[str, Any]:
+    """Parse a JSON object from model output, tolerating stray Markdown fences."""
+    text = raw_text.strip()
+    if text.startswith("```"):
+        # Drop the opening fence (and optional language tag) and the closing fence
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+        text = text.rsplit("```", 1)[0]
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Model returned non-JSON response for {step}: {e}") from e
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Model returned JSON that is not an object for {step}.")
+    return result
+
+
+def _string_list(value: Any) -> list[str]:
+    """Coerce a model-provided value into a list of non-empty strings."""
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def extract_key_findings(
     papers: list[dict[str, Any]], topic: str
 ) -> dict[str, Any]:
     """
-    Use GPT-5.4 to extract key themes, per-paper findings, and methodologies.
+    Use the OpenAI model to extract key themes, per-paper findings, and methodologies.
 
     Args:
         papers: List of normalised paper dicts (must have title, abstract, year).
@@ -44,14 +114,12 @@ def extract_key_findings(
             findings_per_paper — list[dict]: {title, finding} per paper
             methodologies   — list[str]: research methods observed across papers
     """
-    client = _get_client()
-
     # Build a condensed paper list for the prompt to stay within token limits
     paper_summaries = "\n\n".join(
         f"[{i + 1}] **{p.get('title', 'Untitled')}** "
-        f"({p.get('year', 'n.d.')})\n"
-        f"Authors: {p.get('authors', 'Unknown')}\n"
-        f"Abstract: {p.get('abstract', 'No abstract available.')[:600]}"
+        f"({p.get('year') or 'n.d.'})\n"
+        f"Authors: {p.get('authors') or 'Unknown'}\n"
+        f"Abstract: {(p.get('abstract') or 'No abstract available.')[:600]}"
         for i, p in enumerate(papers)
     )
 
@@ -67,33 +135,28 @@ Return ONLY valid JSON — no markdown fences, no explanation text.
 Papers:
 {paper_summaries}"""
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-5.4",
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw_text = response.choices[0].message.content.strip()
+    raw_text = _chat(prompt, max_completion_tokens=16000, json_mode=True, step="extract_key_findings")
+    result = _parse_json_object(raw_text, "extract_key_findings")
 
-        # Strip markdown code fences if the model wraps the JSON anyway
-        if raw_text.startswith("```"):
-            raw_text = raw_text.split("```")[1]
-            if raw_text.startswith("json"):
-                raw_text = raw_text[4:]
+    findings_per_paper: list[dict[str, str]] = []
+    for item in result.get("findings_per_paper") or []:
+        if isinstance(item, dict):
+            findings_per_paper.append(
+                {"title": str(item.get("title", "")), "finding": str(item.get("finding", ""))}
+            )
 
-        result: dict[str, Any] = json.loads(raw_text)
-        return result
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"GPT-5.4 returned non-JSON response for extract_key_findings: {e}") from e
-    except APIError as e:
-        raise RuntimeError(f"OpenAI API error in extract_key_findings: {e}") from e
+    return {
+        "themes": _string_list(result.get("themes")),
+        "findings_per_paper": findings_per_paper,
+        "methodologies": _string_list(result.get("methodologies")),
+    }
 
 
 def identify_research_gaps(
     themes: list[str], findings: list[str]
 ) -> dict[str, Any]:
     """
-    Use GPT-5.4 to identify research gaps, open questions, and debates.
+    Use the OpenAI model to identify research gaps, open questions, and debates.
 
     Args:
         themes: List of theme strings extracted from extract_key_findings.
@@ -105,8 +168,6 @@ def identify_research_gaps(
             open_questions  — list[str]: unanswered research questions
             debates         — list[str]: contradictions or active debates in the literature
     """
-    client = _get_client()
-
     themes_text = "\n".join(f"- {t}" for t in themes)
     findings_text = "\n".join(f"- {f}" for f in findings)
 
@@ -127,25 +188,14 @@ Return a JSON object with exactly these keys:
 
 Return ONLY valid JSON — no markdown, no preamble."""
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-5.4",
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw_text = response.choices[0].message.content.strip()
+    raw_text = _chat(prompt, max_completion_tokens=8000, json_mode=True, step="identify_research_gaps")
+    result = _parse_json_object(raw_text, "identify_research_gaps")
 
-        if raw_text.startswith("```"):
-            raw_text = raw_text.split("```")[1]
-            if raw_text.startswith("json"):
-                raw_text = raw_text[4:]
-
-        result: dict[str, Any] = json.loads(raw_text)
-        return result
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"GPT-5.4 returned non-JSON response for identify_research_gaps: {e}") from e
-    except APIError as e:
-        raise RuntimeError(f"OpenAI API error in identify_research_gaps: {e}") from e
+    return {
+        "gaps": _string_list(result.get("gaps")),
+        "open_questions": _string_list(result.get("open_questions")),
+        "debates": _string_list(result.get("debates")),
+    }
 
 
 def synthesise_literature_review(
@@ -155,7 +205,7 @@ def synthesise_literature_review(
     gaps: dict[str, Any],
 ) -> str:
     """
-    Use GPT-5.4 to write a full structured literature review in Markdown format.
+    Use the OpenAI model to write a full structured literature review in Markdown format.
 
     Args:
         topic: The research topic string.
@@ -165,19 +215,19 @@ def synthesise_literature_review(
 
     Returns:
         A Markdown string (600–900 words) with sections:
-        Introduction, Key Themes, Major Findings, Research Gaps, Conclusion.
+        Introduction, Key Themes, Major Findings, Research Gaps, Conclusion,
+        followed by a References section generated from ``papers``.
     """
-    client = _get_client()
-
-    # Summarise papers for citation reference
+    # Give every paper a ready-made citation key so the model cites real
+    # papers in a consistent format instead of inventing authors.
     paper_refs = "\n".join(
-        f"- {p.get('title', 'Untitled')} ({p.get('year', 'n.d.')}) — {p.get('authors', 'Unknown')}"
+        f"- {_citation_key(p)} — {p.get('title') or 'Untitled'}"
         for p in papers
     )
 
     themes_text = "\n".join(f"- {t}" for t in findings.get("themes", []))
     findings_text = "\n".join(
-        f"- {fp.get('title', '')} ({fp.get('finding', '')})"
+        f"- {fp.get('title', '')}: {fp.get('finding', '')}"
         for fp in findings.get("findings_per_paper", [])
     )
     gaps_text = "\n".join(f"- {g}" for g in gaps.get("gaps", []))
@@ -195,13 +245,15 @@ Write a literature review in Markdown with exactly these five sections:
 
 Guidelines:
 - Target 600–900 words total
-- Cite papers inline by title and year, e.g. (Smith et al., 2023)
+- Cite papers inline using exactly the citation key shown before each paper below, e.g. (Vaswani et al., 2017)
+- Only cite papers from the list below — never invent authors, years or papers
+- Do NOT write a References or Bibliography section; it is appended automatically
 - Be analytical, not just descriptive — discuss relationships between findings
 - In the Research Gaps section, include both gaps and open questions
 
 Use the following material:
 
-**Papers:**
+**Papers (citation key — title):**
 {paper_refs}
 
 **Themes:**
@@ -221,12 +273,46 @@ Use the following material:
 
 Write the full Markdown review now:"""
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-5.4",
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
+    review = _chat(prompt, max_completion_tokens=16000, json_mode=False, step="synthesise_literature_review")
+    # Drop any references list the model wrote anyway, then append the real one
+    review = re.split(r"\n#{1,6}\s*(?:References|Bibliography)\b", review, flags=re.IGNORECASE)[0]
+    return f"{review.rstrip()}\n\n{_references_section(papers)}\n"
+
+
+def _author_list(paper: dict[str, Any]) -> list[str]:
+    """Split the comma-separated authors string into individual names."""
+    return [a.strip() for a in str(paper.get("authors") or "").split(",") if a.strip()]
+
+
+def _citation_key(paper: dict[str, Any]) -> str:
+    """Build an author-year citation key such as "(Vaswani et al., 2017)"."""
+    authors = _author_list(paper)
+    year = paper.get("year") or "n.d."
+    if not authors:
+        short_title = " ".join(str(paper.get("title") or "Untitled").split()[:4])
+        return f"({short_title}, {year})"
+    surname = authors[0].split()[-1]
+    if len(authors) == 1:
+        return f"({surname}, {year})"
+    if len(authors) == 2:
+        return f"({surname} & {authors[1].split()[-1]}, {year})"
+    return f"({surname} et al., {year})"
+
+
+def _references_section(papers: list[dict[str, Any]]) -> str:
+    """Build a Markdown References section from the actual input papers."""
+    entries: list[str] = []
+    def sort_key(paper: dict[str, Any]) -> str:
+        authors = _author_list(paper)
+        return (authors[0].split()[-1] if authors else str(paper.get("title") or "")).lower()
+
+    for paper in sorted(papers, key=sort_key):
+        authors = _author_list(paper)
+        author_text = ", ".join(authors[:6]) + (", et al." if len(authors) > 6 else "")
+        title = str(paper.get("title") or "Untitled")
+        url = paper.get("url") or paper.get("pdf_url")
+        title_text = f"[{title}]({url})" if url else title
+        entries.append(
+            f"- {author_text or 'Unknown authors'} ({paper.get('year') or 'n.d.'}). {title_text}."
         )
-        return response.choices[0].message.content.strip()
-    except APIError as e:
-        raise RuntimeError(f"OpenAI API error in synthesise_literature_review: {e}") from e
+    return "## References\n\n" + "\n".join(entries)
